@@ -9,12 +9,17 @@ public class ConexaoDB {
     // Cria o arquivo do banco na raiz do projeto
     private static final String URL = "jdbc:sqlite:spendless.db";
 
+    // As tabelas só precisam ser criadas/verificadas uma vez por execução do programa
+    private static boolean inicializado = false;
+
     // Conecta ao banco de dados e garante que as tabelas existem
-    public static Connection conectar() {
+    public static synchronized Connection conectar() {
         Connection conexao = null;
         try {
             conexao = DriverManager.getConnection(URL);
-            criarTabelas(conexao); // Chama a criação automática
+            if (!inicializado) {
+                inicializado = criarTabelas(conexao); // Só marca como pronto se deu certo
+            }
         } catch (SQLException e) {
             System.out.println("Erro ao conectar ao banco SQLite: " + e.getMessage());
         }
@@ -22,7 +27,7 @@ public class ConexaoDB {
     }
 
     // Método que cria as tabelas essenciais e popula as categorias
-    private static void criarTabelas(Connection conn) {
+    private static boolean criarTabelas(Connection conn) {
         String sqlUsuarios = "CREATE TABLE IF NOT EXISTS tb_usuarios ("
                 + "cpf TEXT PRIMARY KEY,"
                 + "nome TEXT NOT NULL,"
@@ -99,8 +104,10 @@ public class ConexaoDB {
                 stmt.execute(insereCategorias);
                 System.out.println("Categorias padrão inseridas com sucesso.");
             }
+            return true;
         } catch (SQLException e) {
             System.out.println("Erro ao criar/popular tabelas: " + e.getMessage());
+            return false;
         }
     }
 
@@ -108,36 +115,37 @@ public class ConexaoDB {
     // MÉTODOS DE USUÁRIOS
     // =========================================================================
 
+    // Cadastra o usuário guardando apenas o HASH da senha (nunca a senha em texto puro).
+    // O primeiro usuário cadastrado em um banco novo vira administrador; os demais são 'padrao'.
+    // (Antes, no MySQL, o admin era cadastrado direto no servidor; no SQLite local isso não existe.)
     public static boolean inserirUsuario(String cpf, String nome, String telefone, String email, String senha) {
-        String sql = "INSERT INTO tb_usuarios (cpf, nome, telefone, email, senha, tipo_usuario) VALUES (?, ?, ?, ?, ?, 'padrao')";
-        try (Connection conn = conectar(); PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setString(1, cpf);
-            stmt.setString(2, nome);
-            stmt.setString(3, telefone);
-            stmt.setString(4, email);
-            stmt.setString(5, senha);
-            stmt.executeUpdate();
-            return true;
+        String sql = "INSERT INTO tb_usuarios (cpf, nome, telefone, email, senha, tipo_usuario) VALUES (?, ?, ?, ?, ?, ?)";
+        try (Connection conn = conectar()) {
+            String tipo = "padrao";
+            try (Statement contagem = conn.createStatement();
+                 ResultSet rs = contagem.executeQuery("SELECT COUNT(*) FROM tb_usuarios")) {
+                if (rs.next() && rs.getInt(1) == 0) {
+                    tipo = "admin";
+                }
+            }
+            try (PreparedStatement stmt = conn.prepareStatement(sql)) {
+                stmt.setString(1, cpf);
+                stmt.setString(2, nome);
+                stmt.setString(3, telefone);
+                stmt.setString(4, email);
+                stmt.setString(5, SenhaUtil.gerarHash(senha));
+                stmt.setString(6, tipo);
+                stmt.executeUpdate();
+                return true;
+            }
         } catch (SQLException e) {
             System.out.println("Erro ao inserir usuário: " + e.getMessage());
             return false;
         }
     }
-    
+
     public static boolean inserirUsuario2(Usuario usuario, String senha) {
-        String sql = "INSERT INTO tb_usuarios (cpf, nome, telefone, email, senha, tipo_usuario) VALUES (?, ?, ?, ?, ?, 'padrao')";
-        try (Connection conn = conectar(); PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setString(1, usuario.getCpf());
-            stmt.setString(2, usuario.getNome());
-            stmt.setString(3, usuario.getTelefone());
-            stmt.setString(4, usuario.getEmail());
-            stmt.setString(5, senha);
-            stmt.executeUpdate();
-            return true;
-        } catch (SQLException e) {
-            System.out.println("Erro ao inserir usuário: " + e.getMessage());
-            return false;
-        }
+        return inserirUsuario(usuario.getCpf(), usuario.getNome(), usuario.getTelefone(), usuario.getEmail(), senha);
     }
     
     public static boolean consultarEmailCPF(String email, String cpf) {
@@ -182,49 +190,54 @@ public class ConexaoDB {
         }
     }
 
-    public static boolean verificarLogin(String cpf, String senha) {
-        String sql = "SELECT * FROM tb_usuarios WHERE cpf = ? AND senha = ?";
-        try (Connection conn = conectar(); PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setString(1, cpf);
-            stmt.setString(2, senha);
-            ResultSet rs = stmt.executeQuery();
-            return rs.next();
+    // Rotina única de autenticação: busca pelo CPF e confere a senha com o hash salvo.
+    // Se a conta ainda tiver senha em texto puro (criada antes do hash), regrava como hash no login.
+    // Retorna { nome, tipo_usuario } se a senha conferir, ou null caso contrário.
+    private static String[] autenticar(String cpf, String senha) {
+        String sql = "SELECT nome, tipo_usuario, senha FROM tb_usuarios WHERE cpf = ?";
+        try (Connection conn = conectar()) {
+            String nome;
+            String tipo;
+            String armazenada;
+            try (PreparedStatement stmt = conn.prepareStatement(sql)) {
+                stmt.setString(1, cpf);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    if (!rs.next()) {
+                        return null;
+                    }
+                    nome = rs.getString("nome");
+                    tipo = rs.getString("tipo_usuario");
+                    armazenada = rs.getString("senha");
+                }
+            }
+            if (!SenhaUtil.verificar(senha, armazenada)) {
+                return null;
+            }
+            if (SenhaUtil.precisaMigrar(armazenada)) {
+                try (PreparedStatement upd = conn.prepareStatement("UPDATE tb_usuarios SET senha = ? WHERE cpf = ?")) {
+                    upd.setString(1, SenhaUtil.gerarHash(senha));
+                    upd.setString(2, cpf);
+                    upd.executeUpdate();
+                }
+            }
+            return new String[] { nome, tipo };
         } catch (SQLException e) {
             System.out.println("Erro ao verificar login: " + e.getMessage());
-            return false;
+            return null;
         }
+    }
+
+    public static boolean verificarLogin(String cpf, String senha) {
+        return autenticar(cpf, senha) != null;
     }
 
     public static String verificarLoginERetornarNome(String cpf, String senha) {
-        String sql = "SELECT nome FROM tb_usuarios WHERE cpf = ? AND senha = ?";
-        try (Connection conn = conectar(); PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setString(1, cpf);
-            stmt.setString(2, senha);
-            ResultSet rs = stmt.executeQuery();
-            if (rs.next()) {
-                return rs.getString("nome");
-            }
-        } catch (SQLException e) {
-            System.out.println("Erro ao buscar nome do usuário: " + e.getMessage());
-        }
-        return null;
+        String[] dados = autenticar(cpf, senha);
+        return dados != null ? dados[0] : null;
     }
 
     public static String[] verificarLoginERetornarDados(String cpf, String senha) {
-        String sql = "SELECT nome, tipo_usuario FROM tb_usuarios WHERE cpf = ? AND senha = ?";
-        try (Connection conn = conectar(); PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setString(1, cpf);
-            stmt.setString(2, senha);
-            ResultSet rs = stmt.executeQuery();
-            if (rs.next()) {
-                String nome = rs.getString("nome");
-                String tipo = rs.getString("tipo_usuario");
-                return new String[] { nome, tipo };
-            }
-        } catch (SQLException e) {
-            System.out.println("Erro ao buscar dados do usuário: " + e.getMessage());
-        }
-        return null;
+        return autenticar(cpf, senha);
     }
 
     public static Usuario buscarUsuarioPorCpf(String cpf) {
@@ -365,16 +378,8 @@ public class ConexaoDB {
         }
     }
 
+    // Delega ao CategoriaDAO para que a regra "não excluir categoria em uso" valha nos dois caminhos
     public static boolean excluirCategoria(int id) {
-        String sql = "DELETE FROM tb_categorias WHERE id = ?";
-
-        try (Connection conn = conectar(); PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setInt(1, id);
-            stmt.executeUpdate();
-            return true;
-        } catch (SQLException e) {
-            e.printStackTrace();
-            return false;
-        }
+        return CategoriaDAO.excluirCategoria(id);
     }
 }

@@ -94,8 +94,31 @@ public class CategoriaDAO {
         }
     }
 
-    // Exclui categoria pelo id
+    // Informa se algum gasto ou renda usa esta categoria
+    public static boolean categoriaEmUso(int id) {
+        String sql = "SELECT 1 FROM tb_gastos WHERE categoria_id = ? "
+                   + "UNION ALL SELECT 1 FROM tb_rendas WHERE categoria_id = ? LIMIT 1";
+        try (Connection conn = ConexaoDB.conectar();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setInt(1, id);
+            stmt.setInt(2, id);
+            try (ResultSet rs = stmt.executeQuery()) {
+                return rs.next();
+            }
+
+        } catch (SQLException e) {
+            System.out.println("Erro ao verificar uso da categoria: " + e.getMessage());
+            return true; // na dúvida, trata como em uso para não apagar dados por engano
+        }
+    }
+
+    // Exclui categoria pelo id (recusa se houver gastos/rendas usando a categoria,
+    // porque eles sumiriam das listas, que fazem JOIN com as categorias)
     public static boolean excluirCategoria(int id) {
+        if (categoriaEmUso(id)) {
+            return false;
+        }
         String sql = "DELETE FROM tb_categorias WHERE id = ?";
         try (Connection conn = ConexaoDB.conectar();
              PreparedStatement stmt = conn.prepareStatement(sql)) {

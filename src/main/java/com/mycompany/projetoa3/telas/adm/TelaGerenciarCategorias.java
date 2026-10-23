@@ -313,8 +313,16 @@ public class TelaGerenciarCategorias extends JPanel {
             return;
         }
 
-        int confirmacao = JOptionPane.showConfirmDialog(this, 
-            "Tem certeza que deseja excluir a categoria '" + categoriaSelecionada.getNome() + "'?\nIsso pode afetar gastos e rendas existentes.", 
+        if (CategoriaDAO.categoriaEmUso(categoriaSelecionada.getIdCategoria())) {
+            JOptionPane.showMessageDialog(this,
+                "Não é possível excluir '" + categoriaSelecionada.getNome() + "': existem gastos ou rendas usando esta categoria.\n"
+                + "Mude a categoria desses lançamentos antes de excluí-la.",
+                "Categoria em uso", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        int confirmacao = JOptionPane.showConfirmDialog(this,
+            "Tem certeza que deseja excluir a categoria '" + categoriaSelecionada.getNome() + "'?\nEsta ação não pode ser desfeita.",
             "Confirmar Exclusão", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
 
         if (confirmacao == JOptionPane.YES_OPTION) {

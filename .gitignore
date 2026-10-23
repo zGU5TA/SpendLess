@@ -1,2 +1,8 @@
 spendless.db
 target/
+dist/
+*.exe
+dependency-reduced-pom.xml
+dist/
+*.exe
+dependency-reduced-pom.xml
